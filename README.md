@@ -63,3 +63,27 @@ Cloudflare, Supabase e o provedor de IA têm limites e planos próprios. A API d
 - Implementar login real e associar cada memória à conta autenticada.
 - Adicionar controles para consultar, exportar e apagar memórias.
 - Avaliar memória de longo prazo por busca semântica, com consentimento do usuário.
+
+
+## Plataforma Nexus — primeira etapa (19/11/2026)
+
+A branch `feat/nexus-platform-foundation` adiciona a base inicial de contas e uso:
+
+- Perfil individual por conta Supabase Auth.
+- Plano inicial `free` com 100 créditos por mês.
+- Um crédito é consumido por mensagem enviada ao chat (mensagens de aprendizagem/guardar conhecimento não consomem crédito nesta etapa).
+- Endpoint autenticado `GET /v1/account` para consultar plano e saldo.
+- Painel no site mostrando plano e créditos disponíveis.
+- O Worker impede novas mensagens quando o saldo chega a zero.
+
+### Ativação obrigatória no Supabase
+
+Antes de publicar esta branch no Worker, abra o SQL Editor do projeto Supabase e execute o arquivo:
+
+`supabase/migrations/20261119_nexus_accounts_credits.sql`
+
+A migração cria os perfis, preenche perfis para contas existentes e instala a função segura de consumo de créditos. A chave `SUPABASE_SERVICE_ROLE_KEY` continua somente como secret no Cloudflare Worker.
+
+### O que ainda não está ativado
+
+Esta etapa não processa pagamentos reais nem vende planos. Os planos Pro e Empresarial aparecem apenas como estrutura futura; não altere manualmente o plano para liberar recursos pagos. A próxima etapa exige escolher e configurar um provedor de pagamento, validar notificações/webhooks no servidor e só então ativar assinaturas. Nenhuma chave financeira deve ser colocada no navegador ou neste repositório.
