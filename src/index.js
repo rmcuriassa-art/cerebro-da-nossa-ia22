@@ -32,6 +32,53 @@ async function authenticateUser(request, env) {
   return user?.id ? user : null;
 }
 
+async function consumeNexusCredit(env, userId) {
+  const response = await fetch(`${env.SUPABASE_URL}/rest/v1/rpc/consume_nexus_credit`, {
+    method: "POST",
+    headers: {
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+      "content-type": "application/json",
+    },
+    body: JSON.stringify({ owner_id: userId }),
+  });
+  if (!response.ok) {
+    const detail = await response.text().catch(() => "");
+    throw new Error(`Não foi possível consultar os créditos (${response.status}): ${detail.slice(0, 180)}`);
+  }
+  return response.json();
+}
+
+async function accountRoute(request, env) {
+  const user = await authenticateUser(request, env);
+  if (!user) return json({ error: "Sessão inválida. Entre na sua conta." }, 401);
+  if (!env.SUPABASE_URL || !env.SUPABASE_SERVICE_ROLE_KEY) {
+    return json({ error: "Configuração do Supabase incompleta." }, 503);
+  }
+  const url = new URL(`${env.SUPABASE_URL}/rest/v1/nexus_profiles`);
+  url.searchParams.set("select", "plan,credits_remaining,credits_reset_at");
+  url.searchParams.set("id", `eq.${user.id}`);
+  url.searchParams.set("limit", "1");
+  const response = await fetch(url, {
+    headers: {
+      apikey: env.SUPABASE_SERVICE_ROLE_KEY,
+      authorization: `Bearer ${env.SUPABASE_SERVICE_ROLE_KEY}`,
+    },
+  });
+  if (!response.ok) {
+    return json({ error: "A tabela de contas do Nexus ainda não foi instalada no Supabase. Execute a migração SQL do projeto." }, 503);
+  }
+  const rows = await response.json();
+  const profile = rows?.[0];
+  if (!profile) return json({ error: "Perfil não encontrado. Saia e entre novamente para atualizar sua conta." }, 404);
+  return json({
+    plan: profile.plan,
+    credits_remaining: profile.credits_remaining,
+    credits_reset_at: profile.credits_reset_at,
+    email: user.email || null,
+  });
+}
+
 async function saveMessage(env, userId, role, content) {
   const response = await fetch(`${env.SUPABASE_URL}/rest/v1/nexus_messages`, {
     method: "POST",
@@ -470,6 +517,25 @@ async function chat(request, env) {
     }
   }
 
+  // Cada mensagem de conversa consome um crédito mensal da conta.
+  try {
+    const creditResult = await consumeNexusCredit(env, userId);
+    if (!creditResult?.allowed) {
+      return json({
+        error: "Você chegou ao limite de créditos gratuitos deste mês.",
+        code: "CREDITS_EXHAUSTED",
+        credits_remaining: creditResult?.credits_remaining ?? 0,
+        plan: creditResult?.plan || "free"
+      }, 402);
+    }
+  } catch (error) {
+    return json({
+      error: "O controle de créditos ainda não está pronto.",
+      detail: String(error?.message || error).slice(0, 250),
+      code: "CREDITS_NOT_CONFIGURED"
+    }, 503);
+  }
+
   // A memória é complementar: se a pesquisa falhar, o agente ainda deve responder.
   let knowledge = [];
   let memoryWarning = null;
@@ -556,6 +622,13 @@ export default {
 </div>
 <div id="chatArea" class="hidden">
 <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;margin-bottom:12px"><span id="signedIn" class="muted"></span><button id="logout" class="secondary" type="button">Sair</button></div>
+<section id="accountCard" style="background:#102b42;border:1px solid #2d5876;border-radius:14px;padding:13px;margin-bottom:14px">
+  <div style="display:flex;justify-content:space-between;gap:12px;align-items:center;flex-wrap:wrap">
+    <div><div style="font-weight:700;color:#8ab4ff">Meu Nexus</div><div id="accountPlan" class="muted">Carregando plano...</div></div>
+    <div style="text-align:right"><div id="accountCredits" style="font-size:22px;font-weight:800">—</div><div class="muted">créditos disponíveis</div></div>
+  </div>
+  <div id="accountReset" class="muted" style="margin-top:8px"></div>
+</section>
 <section style="background:#0e192c;border:1px solid #263b60;border-radius:14px;padding:14px;margin-bottom:14px">
 <h3 style="margin:0 0 6px;color:#8ab4ff">Memória própria do Nexus</h3>
 <p class="muted" style="margin:0 0 10px">Guarde informações para o Nexus pesquisar e usar como contexto nas respostas.</p>
@@ -604,11 +677,31 @@ export default {
     chatlog.appendChild(item);
     chatlog.scrollTop=chatlog.scrollHeight;
   }
+  async function loadAccount(session){
+    var plan=document.getElementById("accountPlan");
+    var credits=document.getElementById("accountCredits");
+    var reset=document.getElementById("accountReset");
+    if(!session)return;
+    try{
+      var response=await fetch("/v1/account",{headers:{"authorization":"Bearer "+session.access_token}});
+      var data=await response.json().catch(function(){return {};});
+      if(!response.ok)throw new Error(data.error||"Não foi possível carregar a conta.");
+      var labels={free:"Plano gratuito",pro:"Plano profissional",business:"Plano empresarial"};
+      plan.textContent=labels[data.plan]||"Plano "+data.plan;
+      credits.textContent=String(data.credits_remaining);
+      reset.textContent=data.credits_reset_at?"Os créditos são renovados mensalmente.":"";
+    }catch(error){
+      plan.textContent="Conta ativa";
+      credits.textContent="—";
+      reset.textContent=error.message||"Não foi possível carregar os créditos.";
+    }
+  }
   function showSession(session){
     if(session && session.user){
       auth.classList.add("hidden");
       chatArea.classList.remove("hidden");
       document.getElementById("signedIn").textContent=session.user.email||"Conta conectada";
+      loadAccount(session);
     }else{
       chatArea.classList.add("hidden");
       auth.classList.remove("hidden");
@@ -673,7 +766,7 @@ export default {
         addBubble("assistant","Aviso técnico: a inteligência artificial não foi acionada. Motivo: "+(data.ai_warning||"não informado")+". O texto acima é uma resposta local limitada.");
       }
     }catch(error){addBubble("assistant","Não consegui responder: "+(error.message||"erro desconhecido"));}
-    finally{sendButton.disabled=false;sendButton.textContent="Enviar";messageBox.focus();}
+    finally{sendButton.disabled=false;sendButton.textContent="Enviar";loadAccount(session);messageBox.focus();}
   });
   client.auth.getSession().then(function(result){showSession(result.data.session);});
   client.auth.onAuthStateChange(function(_event,session){showSession(session);});
