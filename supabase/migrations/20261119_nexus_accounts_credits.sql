@@ -37,6 +37,11 @@ create trigger on_auth_user_created_nexus_profile
   after insert on auth.users
   for each row execute procedure public.create_nexus_profile();
 
+-- Create profiles for accounts that existed before this migration.
+insert into public.nexus_profiles (id, plan, credits_remaining)
+select id, 'free', 100 from auth.users
+on conflict (id) do nothing;
+
 create or replace function public.consume_nexus_credit(owner_id uuid)
 returns jsonb
 language plpgsql
