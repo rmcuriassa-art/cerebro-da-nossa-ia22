@@ -766,7 +766,7 @@ export default {
         addBubble("assistant","Aviso técnico: a inteligência artificial não foi acionada. Motivo: "+(data.ai_warning||"não informado")+". O texto acima é uma resposta local limitada.");
       }
     }catch(error){addBubble("assistant","Não consegui responder: "+(error.message||"erro desconhecido"));}
-    finally{sendButton.disabled=false;sendButton.textContent="Enviar";messageBox.focus();}
+    finally{sendButton.disabled=false;sendButton.textContent="Enviar";loadAccount(session);messageBox.focus();}
   });
   client.auth.getSession().then(function(result){showSession(result.data.session);});
   client.auth.onAuthStateChange(function(_event,session){showSession(session);});
